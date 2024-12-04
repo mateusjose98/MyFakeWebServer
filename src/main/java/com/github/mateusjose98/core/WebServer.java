@@ -1,6 +1,10 @@
 package com.github.mateusjose98.core;
 
+import com.github.mateusjose98.http.MyRequest;
+import com.github.mateusjose98.util.HttpMethod;
 import com.github.mateusjose98.util.WebConfig;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -10,24 +14,21 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.logging.Logger;
 
 
 public class WebServer {
 
-    public static final Logger LOGGER = Logger.getLogger(WebServer.class.getName());
+    public static final Logger LOGGER = LoggerFactory.getLogger(WebServer.class.getName());
 
     private int portNumber;
     private ServerSocket serverSocket;
-    private String httpMethod;
-    private String resourcePath;
 
     public WebServer(int portNumber){
         try {
             this.portNumber = portNumber;
             this.serverSocket = new ServerSocket(portNumber);
         } catch (Exception e) {
-            LOGGER.severe("Could not initialize server at port: " + portNumber);
+            LOGGER.error("Could not initialize server at port: " + portNumber);
         }
         start();
 
@@ -40,68 +41,102 @@ public class WebServer {
             Socket newSocket = null;
             try {
                 newSocket = serverSocket.accept();
-                handleRequest(newSocket);
+                handleConnection(newSocket);
             } catch (Exception e) {
-                LOGGER.severe("Could not accept client connection");
+                e.printStackTrace();
+                LOGGER.error("Could not accept client connection");
 
             }
         }
     }
 
-    private void handleRequest(Socket newSocket) {
+    private void handleConnection(Socket newSocket) {
+
         LOGGER.info("Handling request from client: " + newSocket.getInetAddress());
+        MyRequest myRequest = new MyRequest();
         try {
-            BufferedReader bufferedReader = new BufferedReader(new InputStreamReader(newSocket.getInputStream()));
+            InputStreamReader inputStreamReader = new InputStreamReader(newSocket.getInputStream());
+            BufferedReader bufferedReader = new BufferedReader(inputStreamReader);
             String line;
+
             do {
                 line = bufferedReader.readLine();
                 if (line == null || line.isEmpty()) {
                     break;
                 }
-                handleLineBuffer(newSocket, line);
+                myRequest = handleLineBuffer(line, myRequest);
 
             } while (!line.isBlank());
+
+            myRequest.setBody(getBodyIfExists(bufferedReader, myRequest));
+            LOGGER.info("Request object created successfully: " + myRequest);
+
+
+            writeResponse(newSocket, myRequest);
+
             newSocket.close();
         } catch (IOException e) {
-            LOGGER.severe("Could not close client connection");
+            LOGGER.error("Could not close client connection");
 
         }
 
     }
 
-    private void handleLineBuffer(Socket newSocket, String line) {
-        if(line.startsWith("GET") || line.startsWith("POST")) {
+    private String getBodyIfExists(BufferedReader bufferedReader, MyRequest myRequest) {
+        try {
+            if (myRequest.getHeaders().containsKey("content-length")) {
+                int contentLength = Integer.parseInt(myRequest.getHeaders().get("content-length"));
+                char[] body = new char[contentLength];
+                bufferedReader.read(body, 0, contentLength);
+                return new String(body);
+            }
+        } catch (IOException e) {
+            LOGGER.error("Could not read body from client connection");
+        }
+        return null;
+    }
+
+    private MyRequest handleLineBuffer(String line, MyRequest myRequest) {
+        if(line.startsWith(HttpMethod.GET.getMethod()) || line.startsWith(HttpMethod.POST.getMethod()) || line.startsWith(HttpMethod.PUT.getMethod()) || line.startsWith(HttpMethod.DELETE.getMethod()) || line.startsWith(HttpMethod.PATCH.getMethod()) || line.startsWith(HttpMethod.OPTIONS.getMethod())) {
             String[] request = line.split(" ");
-            httpMethod = request[0];
-            resourcePath = request[1];
-            System.out.println("HTTP Method: " + httpMethod + " At: " + resourcePath);
+            myRequest = new MyRequest(
+                    null,
+                    HttpMethod.valueOf(request[0]),
+                    request[1]);
 
-            String completePath = WebConfig.WEB_ROOT + resourcePath;
-            System.out.println("Complete Path: " + completePath);
+        } else {
+            System.out.println(line.split(": ")[0] + " == " + line.split(": ")[1]);
+            myRequest.getHeaders().put(line.split(": ")[0].toLowerCase(), line.split(": ")[1].toLowerCase());
+        }
+        return myRequest;
 
-            try {
-                OutputStream outputStream = newSocket.getOutputStream();
-                if (Files.exists(Path.of(completePath)) && Files.isRegularFile(Path.of(completePath))) {
-                    byte[] content = Files.readAllBytes(Path.of(completePath));
-                    outputStream.write("HTTP/1.1 200 OK\r\n".getBytes());
-                    outputStream.write(("Content-Type: " + WebConfig.MIME_TYPES.get(completePath.substring(completePath.lastIndexOf(".") + 1) + "\r\n")).getBytes());
-                    outputStream.write(("Content-Length: " + content.length + "\r\n").getBytes());
-                    outputStream.write("\r\n".getBytes());
-                    outputStream.write(content);
-                } else {
-                    outputStream.write("HTTP/1.1 404 Not Found\r\n".getBytes());
-                    outputStream.write("Content-Type: text/html\r\n".getBytes());
-                    outputStream.write("\r\n".getBytes());
-                    outputStream.write("<h1>404 Not Found</h1>".getBytes());
-                }
+    }
 
-            } catch (IOException e) {
-                LOGGER.severe("Could not write to client connection");
+    private static void writeResponse(Socket newSocket, MyRequest myRequest) {
+
+        String completePath = WebConfig.WEB_ROOT + myRequest.getResourcePath();
+
+
+
+        try {
+            OutputStream outputStream = newSocket.getOutputStream();
+            if (Files.exists(Path.of(completePath)) && Files.isRegularFile(Path.of(completePath))) {
+                byte[] content = Files.readAllBytes(Path.of(completePath));
+                outputStream.write("HTTP/1.1 200 OK\r\n".getBytes());
+                outputStream.write(("Content-Type: " + WebConfig.MIME_TYPES.get(completePath.substring(completePath.lastIndexOf(".") + 1) + "\r\n")).getBytes());
+                outputStream.write(("Content-Length: " + content.length + "\r\n").getBytes());
+                outputStream.write("\r\n".getBytes());
+                outputStream.write(content);
+            } else {
+                outputStream.write("HTTP/1.1 404 Not Found\r\n".getBytes());
+                outputStream.write("Content-Type: text/html\r\n".getBytes());
+                outputStream.write("\r\n".getBytes());
+                outputStream.write("<h1>404 Não encontramos a sua página/recurso!</h1>".getBytes());
             }
 
-
+        } catch (IOException e) {
+            LOGGER.error("Could not write to client connection");
         }
-
     }
 
     public WebServer() throws IOException {
@@ -124,19 +159,4 @@ public class WebServer {
         this.serverSocket = serverSocket;
     }
 
-    public String getHttpMethod() {
-        return httpMethod;
-    }
-
-    public void setHttpMethod(String httpMethod) {
-        this.httpMethod = httpMethod;
-    }
-
-    public String getResourcePath() {
-        return resourcePath;
-    }
-
-    public void setResourcePath(String resourcePath) {
-        this.resourcePath = resourcePath;
-    }
 }
