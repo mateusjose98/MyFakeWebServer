@@ -1,15 +1,14 @@
 package com.github.mateusjose98.core;
 
 import com.github.mateusjose98.http.MyRequest;
+import com.github.mateusjose98.http.MyResponse;
 import com.github.mateusjose98.util.HttpMethod;
 import com.github.mateusjose98.util.WebConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.InputStreamReader;
-import java.io.OutputStream;
+import java.io.*;
+import java.lang.reflect.InvocationTargetException;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.file.Files;
@@ -114,24 +113,44 @@ public class WebServer {
 
     private static void writeResponse(Socket newSocket, MyRequest myRequest) {
 
-        String completePath = WebConfig.WEB_ROOT + myRequest.getResourcePath();
-
-
+        String completePath = new File(WebConfig.WEB_ROOT).getAbsoluteFile().getPath() + myRequest.getResourcePath();
 
         try {
             OutputStream outputStream = newSocket.getOutputStream();
+            MyResponse res = new MyResponse(outputStream);
             if (Files.exists(Path.of(completePath)) && Files.isRegularFile(Path.of(completePath))) {
-                byte[] content = Files.readAllBytes(Path.of(completePath));
-                outputStream.write("HTTP/1.1 200 OK\r\n".getBytes());
-                outputStream.write(("Content-Type: " + WebConfig.MIME_TYPES.get(completePath.substring(completePath.lastIndexOf(".") + 1) + "\r\n")).getBytes());
-                outputStream.write(("Content-Length: " + content.length + "\r\n").getBytes());
-                outputStream.write("\r\n".getBytes());
-                outputStream.write(content);
+                byte[] fileBytes = Files.readAllBytes(Path.of(completePath));
+                res.write("HTTP/1.1 200 OK\r\n");
+                res.write("Content-Type: " + WebConfig.MIME_TYPES.get(completePath.substring(completePath.lastIndexOf(".") + 1)) + "\r\n");
+                res.write("Content-Length: " + fileBytes.length + "\r\n");
+                res.write("\r\n");
+                outputStream.write(fileBytes);
+
             } else {
-                outputStream.write("HTTP/1.1 404 Not Found\r\n".getBytes());
-                outputStream.write("Content-Type: text/html\r\n".getBytes());
-                outputStream.write("\r\n".getBytes());
-                outputStream.write("<h1>404 Não encontramos a sua página/recurso!</h1>".getBytes());
+                if (WebConfig.ROUTES.get(myRequest.getResourcePath()) != null) {
+                    Class<?> klass = WebConfig.ROUTES.get(myRequest.getResourcePath());
+
+                    for (var method : klass.getDeclaredMethods()) {
+
+                        if ( "void".equalsIgnoreCase(method.getReturnType().getName())) {
+                            try {
+                                method.invoke(klass.getDeclaredConstructor().newInstance());
+                            } catch (IllegalAccessException | InvocationTargetException | InstantiationException | NoSuchMethodException e) {
+                                e.printStackTrace();
+                            }
+                        }
+
+                    }
+
+                    res.write("HTTP/1.1 200 OK\r\n");
+
+
+                } else {
+                    outputStream.write("HTTP/1.1 404 Not Found\r\n".getBytes());
+                    outputStream.write("Content-Type: text/html\r\n".getBytes());
+                    outputStream.write("\r\n".getBytes());
+                    outputStream.write("<h1>404 Não encontramos a sua página/recurso!</h1>".getBytes());
+                }
             }
 
         } catch (IOException e) {
